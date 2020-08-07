@@ -20,19 +20,32 @@ pub const Snowflake = struct {
         try writer.print("{}", .{self.data});
     }
 
-    pub fn asMention(self: Snowflake, writer: anytype) !void {
-        try writer.print("<@{}>", .{self.data});
-    }
+    pub const MentionKind = enum { user, role, channel };
 
-    pub fn asChannel(self: Snowflake, writer: anytype) !void {
-        try writer.print("<#{}>", .{self.data});
+    pub fn mention(self: Snowflake, kind: MentionKind, writer: anytype) !void {
+        switch (kind) {
+            .user => try writer.print("<@{}>", .{self.data}),
+            .role => try writer.print("<@&{}>", .{self.data}),
+            .channel => try writer.print("<#{}>", .{self.data}),
+        }
     }
 
     /// nanosecond time
     pub fn milliTimestamp(self: @This()) i64 {
         return @intCast(i64, (self.data >> 22) + 1420070400000);
     }
+
+    pub fn from(str: []const u8) Snowflake {
+        return Snowflake{
+            .data = std.fmt.parseInt(u64, str, 10) catch unreachable, // means discord gave us invalid data
+        };
+    }
 };
+
+pub const Timestamp = u64;
+pub fn timestampFrom(str: []const u8) Timestamp {
+    return 2; // TODO
+}
 
 pub const MessageType = enum(u32) {
     default,
@@ -53,14 +66,100 @@ pub const MessageType = enum(u32) {
     _,
 };
 
+pub const UserFlags = packed struct {
+    discord_employee: u1,
+    discord_partner: u1,
+    hypesquad_events: u1,
+    bug_hunter_level_1: u1,
+    house_bravery: u1,
+    house_brilliance: u1,
+    house_balance: u1,
+    early_supporter: u1,
+    team_user: u1,
+    system: u1,
+    bug_hunter_level_2: u1,
+    verified_bot: u1,
+    verified_bot_developer: u1,
+    pub fn from(flags: api_types.UInt) UserFlags {
+        return @bitCast(UserFlags, @truncate(u13, flags));
+    }
+};
+
+/// TODO
+pub const WebhookUser = struct {};
+pub const User = struct {
+    username: []const u8,
+    id: Snowflake,
+    discriminator: []const u8,
+    // avatar: union(enum) {custom: Avatar, default: Avatar}
+    // default avatar is based on the discriminator or id or something
+
+    pub fn from(user: api_types.PartialUser) User {
+        // Auto.fill(User, user);
+        return .{
+            .username = user.username,
+            .id = Snowflake.from(user.id),
+            .discriminator = user.discriminator,
+        };
+    }
+};
+pub const GuildMember = struct {
+    // roles: []Snowflake,
+    // joined_at: Timestamp,
+    pub fn from(member: api_types.PartialMember) GuildMember {
+        return .{};
+    }
+};
+
+/// https://discord.com/developers/docs/resources/channel#message-object-message-flags
+pub const MessageFlags = packed struct {
+    /// this message has been published to subscribed channels (via Channel Following)
+    crossposted: u1 = 0,
+    /// this message originated from a message in another channel (via Channel Following)
+    is_crosspost: u1 = 0,
+    ///	do not include any embeds when serializing this message
+    supress_embeds: u1 = 0,
+    /// the source message for this crosspost has been deleted (via Channel Following)
+    source_message_deleted: u1 = 0,
+    /// this message came from the urgent message system
+    urgent: u1 = 0,
+
+    pub fn from(flags: api_types.UInt) MessageFlags {
+        return @bitCast(MessageFlags, @truncate(u5, flags));
+    }
+};
+
 pub const Message = struct {
     id: Snowflake,
     channel_id: Snowflake,
+    guild_id: ?Snowflake,
+    author: union(enum) { user: User, webhook_user: WebhookUser },
+    member: ?GuildMember,
+    flags: MessageFlags,
+
     content: []const u8,
+
     tts: bool,
     mention_everyone: bool,
     pinned: bool,
     kind: MessageType,
+
+    pub fn from(msg: api_types.Message) Message {
+        return Message{
+            .id = Snowflake.from(msg.id),
+            .channel_id = Snowflake.from(msg.channel_id),
+            .guild_id = if (msg.guild_id) |guildid| Snowflake.from(guildid) else null,
+            .author = if (msg.webhook_id) |whid| .{ .webhook_user = .{} } else .{ .user = User.from(msg.author) },
+            .member = if (msg.member) |msgmem| GuildMember.from(msgmem) else null,
+            .flags = if (msg.flags) |flags| MessageFlags.from(flags) else .{},
+
+            .content = msg.content,
+            .tts = msg.tts,
+            .mention_everyone = msg.mention_everyone,
+            .pinned = msg.pinned,
+            .kind = @intToEnum(MessageType, @intCast(@TagType(MessageType), msg.@"type")),
+        };
+    }
 };
 
 pub const DiscordEvent = union(enum) {
@@ -320,6 +419,7 @@ pub const Session = struct {
 
         var json_stream = json.TokenStream.init(raw);
 
+        @setEvalBranchQuota(100_000);
         const event = Event{
             .raw = raw,
             .data = switch (std.hash.Crc32.hash(event_string)) {
@@ -327,24 +427,14 @@ pub const Session = struct {
                     const message = try json.parse(api_types.MessageCreate, &json_stream, options);
 
                     break :blk .{
-                        .message_create = .{
-                            .id = Snowflake{ .data = std.fmt.parseInt(u64, message.d.id, 10) catch unreachable },
-                            .channel_id = Snowflake{ .data = std.fmt.parseInt(u64, message.d.channel_id, 10) catch unreachable },
-                            .content = message.d.content,
-                            .tts = message.d.tts,
-                            .mention_everyone = message.d.mention_everyone,
-                            .pinned = message.d.pinned,
-                            .kind = @intToEnum(MessageType, @intCast(@TagType(MessageType), message.d.@"type")),
-                        },
+                        .message_create = Message.from(message.d),
                     };
                 },
                 else => .{ .unknown = event_string },
             },
         };
 
-        handler(self, event) catch |err| {
-            std.log.warn(.zigcord_unhandled, "{}\n", .{err});
-        };
+        try handler(self, event);
     }
 
     pub fn sendMessage(self: *Session, channel: Snowflake, text: []const u8) !void {

@@ -1629,6 +1629,7 @@ fn parseInternal(comptime T: type, token: Token, tokens: *TokenStream, options: 
                     if (field.default_value) |default| {
                         @field(r, field.name) = default;
                     } else {
+                        std.debug.warn("Could not find field {}\n", .{field.name});
                         return error.MissingField;
                     }
                 }
