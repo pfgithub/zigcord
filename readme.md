@@ -2,7 +2,11 @@
 - Consume MESSAGE_CREATE events
 - Send channel messages
 
-Recursively clone, place your token inside `example-src/main.zig`, and run `zig build` for the ping-pong example.
+## usage
+
+- `git clone --recurse-submodules`
+- make a file called `example-src/token` containing your token
+- `while zig build run; do; done`
 
 ## errors
 
