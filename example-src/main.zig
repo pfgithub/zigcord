@@ -1,6 +1,6 @@
 const std = @import("std");
 const zigcord = @import("zigcord");
-const token = "Bot " ++ "";
+const token = "Bot " ++ @embedFile("token");
 
 fn handler(session: *zigcord.Session, event: zigcord.Event) !void {
     switch (event.data) {
